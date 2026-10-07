@@ -357,9 +357,12 @@
    *   やり直すのは読み取り（me / ranks / pointHistory）と register だけ。
    *   register はサーバー側で LINEユーザーIDの重複を弾いているが、念のため
    *   やり直す前に me で登録済みかを確かめ、済んでいれば再送しない。
+   *   読み取りは15秒で打ち切ってやり直す（Googleが30秒以上待たせて404を返すことがあるため）。
+   *   register は打ち切らない（サーバーで処理中のものを途中で見捨てないため）。
    */
   var API_RETRY_WAITS = [1200, 2000];   // 1回目のやり直しまで1.2秒、2回目まで2秒
   var API_RETRY_ACTIONS = { me: true, ranks: true, pointHistory: true, register: true };
+  var API_READ_TIMEOUT_MS = 15000;
   var API_BUSY_MSG = '通信が混み合っています。少し待ってからもう一度お試しください。';
 
   function apiBusyError(detail) {
@@ -371,16 +374,27 @@
   function apiWait(ms) { return new Promise(function (res) { setTimeout(res, ms); }); }
 
   /** 1回だけ送る。読めない応答は retryable なエラー、ok:false は普通のエラーにする */
-  function apiOnce(action, params) {
+  function apiOnce(action, params, timeoutMs) {
     var body = Object.assign({ action: action, idToken: idToken }, params || {});
-    return fetch(CONFIG.apiUrl, {
+    var opt = {
       method: 'POST',
       headers: { 'Content-Type': 'text/plain;charset=utf-8' },
       body: JSON.stringify(body)
-    }).then(function (r) {
+    };
+    var timer = null;
+    if (timeoutMs && typeof AbortController === 'function') {
+      var ac = new AbortController();
+      opt.signal = ac.signal;
+      timer = setTimeout(function () { ac.abort(); }, timeoutMs);
+    }
+    return fetch(CONFIG.apiUrl, opt).then(function (r) {
       return r.text().then(function (t) { return { status: r.status, text: t }; });
-    }).then(null, function (err) {
-      throw apiBusyError(err);                       // 通信そのものの失敗
+    }).then(function (res) {
+      if (timer) clearTimeout(timer);
+      return res;
+    }, function (err) {
+      if (timer) clearTimeout(timer);
+      throw apiBusyError(err);                       // 通信そのものの失敗・打ち切り
     }).then(function (res) {
       if (res.status >= 500) throw apiBusyError('HTTP ' + res.status);
       var j = null;
@@ -397,11 +411,11 @@
       var p;
       if (isRetry && action === 'register') {
         // 前回の送信がサーバーに届いて登録まで済んでいる場合に備え、先に確かめる
-        p = apiOnce('me').then(function (d) {
+        p = apiOnce('me', null, API_READ_TIMEOUT_MS).then(function (d) {
           return (d && d.registered) ? { already: true } : apiOnce('register', params);
         });
       } else {
-        p = apiOnce(action, params);
+        p = apiOnce(action, params, action === 'register' ? 0 : API_READ_TIMEOUT_MS);
       }
       return p.catch(function (err) {
         if (!err || !err.retryable || !API_RETRY_ACTIONS[action] || attempt >= API_RETRY_WAITS.length) throw err;
