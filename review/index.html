@@ -347,15 +347,68 @@
     return m ? (m[1] + '/' + Number(m[2]) + '/' + Number(m[3])) : String(s || '');
   }
 
-  /** GASウェブアプリ呼び出し。text/plain でプリフライトを避ける。 */
-  function api(action, params) {
+  /**
+   * GASウェブアプリ呼び出し。text/plain でプリフライトを避ける。
+   *
+   * 2026-10-07: 通信のやり直しを追加。
+   *   Google側が一時的に不安定なとき、JSONではなくHTMLのエラーページが返ることがある。
+   *   応答がJSONとして読めない（HTML・通信エラー・5xx）ときだけ、少し待って最大2回までやり直す。
+   *   { ok:false }（認証失敗・入力エラーなど、正しく返った業務エラー）はやり直さない。
+   *   やり直すのは読み取り（me / ranks / pointHistory）と register だけ。
+   *   register はサーバー側で LINEユーザーIDの重複を弾いているが、念のため
+   *   やり直す前に me で登録済みかを確かめ、済んでいれば再送しない。
+   */
+  var API_RETRY_WAITS = [1200, 2000];   // 1回目のやり直しまで1.2秒、2回目まで2秒
+  var API_RETRY_ACTIONS = { me: true, ranks: true, pointHistory: true, register: true };
+  var API_BUSY_MSG = '通信が混み合っています。少し待ってからもう一度お試しください。';
+
+  function apiBusyError(detail) {
+    var e = new Error(API_BUSY_MSG);
+    e.retryable = true;
+    e.detail = String(detail && detail.message ? detail.message : detail);
+    return e;
+  }
+  function apiWait(ms) { return new Promise(function (res) { setTimeout(res, ms); }); }
+
+  /** 1回だけ送る。読めない応答は retryable なエラー、ok:false は普通のエラーにする */
+  function apiOnce(action, params) {
     var body = Object.assign({ action: action, idToken: idToken }, params || {});
     return fetch(CONFIG.apiUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'text/plain;charset=utf-8' },
       body: JSON.stringify(body)
-    }).then(function (r) { return r.json(); })
-      .then(function (j) { if (!j.ok) throw new Error(j.error || '通信に失敗しました'); return j.data; });
+    }).then(function (r) {
+      return r.text().then(function (t) { return { status: r.status, text: t }; });
+    }).then(null, function (err) {
+      throw apiBusyError(err);                       // 通信そのものの失敗
+    }).then(function (res) {
+      if (res.status >= 500) throw apiBusyError('HTTP ' + res.status);
+      var j = null;
+      try { j = JSON.parse(res.text); } catch (e) { j = null; }
+      if (!j || typeof j !== 'object' || typeof j.ok !== 'boolean') throw apiBusyError('HTTP ' + res.status + ' not JSON');
+      if (!j.ok) throw new Error(j.error || '通信に失敗しました');   // 業務エラーはやり直さない
+      return j.data;
+    });
+  }
+
+  function api(action, params) {
+    var attempt = 0;
+    function step(isRetry) {
+      var p;
+      if (isRetry && action === 'register') {
+        // 前回の送信がサーバーに届いて登録まで済んでいる場合に備え、先に確かめる
+        p = apiOnce('me').then(function (d) {
+          return (d && d.registered) ? { already: true } : apiOnce('register', params);
+        });
+      } else {
+        p = apiOnce(action, params);
+      }
+      return p.catch(function (err) {
+        if (!err || !err.retryable || !API_RETRY_ACTIONS[action] || attempt >= API_RETRY_WAITS.length) throw err;
+        return apiWait(API_RETRY_WAITS[attempt++]).then(function () { return step(true); });
+      });
+    }
+    return step(false);
   }
 
   /* ---------------- 描画 ---------------- */
