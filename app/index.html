@@ -521,7 +521,7 @@
     }).join('');
     var s = state.settings;
     $('rankNote').textContent = s.canUsePoints
-      ? ('たまったポイントは ' + num(s.minUse) + 'pt から、1pt = ' + s.ptYen + '円 としてお会計にお使いいただけます。有効期限は付与から ' + s.expireDays + ' 日です。')
+      ? ('たまったポイントは ' + num(s.minUse) + 'pt から、' + num(s.minUse) + 'pt 単位（1pt = ' + s.ptYen + '円）でお会計にお使いいただけます。有効期限は付与から ' + s.expireDays + ' 日です。')
       : ('ポイントの有効期限は付与から ' + s.expireDays + ' 日です。');
   }
 
