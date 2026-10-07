@@ -405,7 +405,39 @@
     });
   }
 
+  /*
+   * 🔴 2026-10-07 表示速度の改善（読み取りだけ）:
+   *   Googleの応答がときどき30秒近く止まってから404になる。待ち切ってからやり直すと、その分だけ開くのが遅れる。
+   *   そこで、6秒たっても返事がなければ同じ問い合わせをもう1本出し、先に返ってきたほうを使う（最大3本）。
+   *   読み取り（会員証・ランク・ポイント履歴）だけに使う。登録などの書き込みには使わない。
+   */
+  var API_HEDGE_ACTIONS = { me: true, ranks: true, pointHistory: true };
+  var API_HEDGE_AFTER_MS = [6000, 12000];
+  var API_HEDGE_TIMEOUT_MS = 25000;
+  function apiHedged(action, params) {
+    return new Promise(function (resolve, reject) {
+      var done = false, launched = 0, failed = 0, max = API_HEDGE_AFTER_MS.length + 1;
+      function launch() {
+        if (done || launched >= max) return;
+        launched++;
+        apiOnce(action, params, API_HEDGE_TIMEOUT_MS).then(function (d) {
+          if (done) return;
+          done = true; resolve(d);
+        }, function (err) {
+          if (done) return;
+          failed++;
+          if (!err || !err.retryable) { done = true; reject(err); return; }   // 業務エラーはやり直さない
+          if (launched < max) { setTimeout(launch, 800); return; }
+          if (failed >= launched) { done = true; reject(err); }
+        });
+      }
+      launch();
+      API_HEDGE_AFTER_MS.forEach(function (ms) { setTimeout(launch, ms); });
+    });
+  }
+
   function api(action, params) {
+    if (API_HEDGE_ACTIONS[action]) return apiHedged(action, params);
     var attempt = 0;
     function step(isRetry) {
       var p;
