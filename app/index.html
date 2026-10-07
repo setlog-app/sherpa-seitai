@@ -645,7 +645,11 @@
         if (!liff.isLoggedIn()) { liff.login(); return null; }
         idToken = liff.getIDToken();
         if (!idToken) throw new Error('LINEの認証情報を取得できませんでした。一度アプリを閉じて開き直してください。');
-        return Promise.all([api('me'), api('ranks')]);
+        // 🔴 2026-10-07 表示速度の改善: 会員情報とランク・設定を1回の通信で受け取る（古いサーバーなら従来どおり2回目で取る）
+        return api('me', { withMeta: true }).then(function (me) {
+          if (me && me.meta && me.meta.ranks) return [me, me.meta];
+          return api('ranks').then(function (meta) { return [me, meta]; });
+        });
       })
       .then(function (res) {
         if (!res) return;
