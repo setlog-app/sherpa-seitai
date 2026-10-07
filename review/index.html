@@ -1,0 +1,602 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>会員証</title>
+<!--
+  本番用 LINEミニアプリ（顧客画面）。
+  2026-08-17 に提示したデモ（demo/index.html）の「お客様画面」5枚を、
+  ダミーデータではなく実データで動かす形に作り替えたもの。
+
+  🔴 2026-09-06（第2弾）
+    会員証（ホーム）の並びを、9/1にいただいた画像のとおりに作り直した。
+      ロゴ＋ランク＋還元率 → 会員名 → ランクアップ進捗 → 保有ポイント（タップで履歴）
+      → ポイント有効期限 → ポイント還元率 → 利用可能なクーポン → 最終ご来院
+    ・会員番号は、ホームから外した（受付では管理画面のお名前・かな検索でお呼び出しできる）
+    ・最終ご来院は「2026/8/10（23日前）」の形にした（経過日数は自動で計算する）
+    ・下のタブを「会員証／ポイント履歴／クーポン一覧／メニュー」の4つにした
+    ・クーポンは、割引の内容と有効期限をホームにそのまま出す
+
+  【設定するもの（2か所だけ）】
+    CONFIG.liffId  … LINE Developersコンソール > ウェブアプリ設定 の LIFF ID
+                      ⚠ 開発用／審査用／本番用で LIFF ID が異なる。デプロイ先ごとに差し替える。
+                      出典: https://developers.line.biz/ja/docs/line-mini-app/discover/console-guide/
+    CONFIG.apiUrl  … GASウェブアプリの /exec URL
+
+  【通信】
+    LINEのIDトークンをサーバー（GAS）へ渡し、サーバー側で
+    POST https://api.line.me/oauth2/v2.1/verify にかけて検証している。
+    ブラウザから受け取った userId をそのまま信用しない作りにしてある。
+
+  【CORS】
+    GASウェブアプリは Content-Type: text/plain で POST するとプリフライトが飛ばない。
+    そのため fetch は text/plain 固定にしている（JSON.stringify した本文を送る）。
+-->
+<style>
+  :root{
+    --bg:#f7f2e9; --card:#fff; --ink:#3d3428; --ink2:#6b5d4a; --ink3:#8a7d6a;
+    --line:#e6ddcd; --brand:#2f6f4f; --gold:#c99a2e; --accent:#e05a2b; --danger:#c0392b;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0}
+  body{
+    font-family:-apple-system,BlinkMacSystemFont,"Hiragino Kaku Gothic ProN","Noto Sans JP",sans-serif;
+    background:var(--bg); color:var(--ink); font-size:15px; line-height:1.7;
+    padding-bottom:calc(64px + env(safe-area-inset-bottom));
+    overflow-x:hidden;
+  }
+  .wrap{max-width:520px;margin:0 auto;padding:16px 14px 24px}
+  .card{background:var(--card);border-radius:14px;padding:14px 15px;margin-bottom:12px;
+        box-shadow:0 1px 4px rgba(90,70,40,.07)}
+  h1{font-size:17px;margin:0 0 10px}
+  h2{font-size:14px;margin:0 0 8px;color:var(--ink2);font-weight:700}
+  .muted{color:var(--ink3);font-size:12.5px}
+  .center{text-align:center}
+  .screen{display:none}
+  .screen.on{display:block}
+  .err{background:#fdecea;border:1px solid #f5c2bd;color:#a4342a;border-radius:10px;padding:12px;font-size:13px}
+
+  /* ===== ホーム（2026-09-06 再構成。9/1 にいただいた並びのとおり） ===== */
+  /* ① ロゴ＋ランク＋還元率 */
+  .hm-top{display:flex;align-items:flex-start;gap:10px;margin:2px 0 10px}
+  .hm-logo{height:46px;max-width:150px;object-fit:contain;margin:0 auto;display:block;
+           background:#fff;border-radius:10px;padding:3px;box-shadow:0 1px 3px rgba(90,70,40,.12)}
+  .hm-rankchip{margin-left:auto;background:#fffdf7;border:1.5px solid #e5c477;border-radius:12px;
+               padding:7px 12px;text-align:center;line-height:1.5;flex:0 0 auto}
+  .hm-rankchip .crown{color:#d4a017;font-size:15px;line-height:1}
+  .hm-rankchip .rname{font-size:11px;font-weight:700;color:#5b4a2f;white-space:nowrap}
+  .hm-rankchip .rrate{font-size:11px;color:#5b4a2f;white-space:nowrap}
+  .hm-rankchip .rrate b{color:var(--accent);font-size:14px}
+  /* ② 会員名 */
+  .hm-name{font-size:26px;font-weight:800;color:var(--ink);letter-spacing:.02em;margin:4px 0 0}
+  .hm-name span{font-size:15px;font-weight:600;margin-left:4px}
+  .hm-greet{font-size:12.5px;color:var(--ink3);margin:2px 0 14px}
+  /* 共通のカード見出し */
+  .hm-cap{font-size:13px;font-weight:700;color:#4a4033;margin-bottom:9px}
+  .hm-cap2{font-size:11.5px;color:var(--ink3)}
+  /* ③ ランクアップ進捗 */
+  .hm-progrow{display:flex;align-items:center;gap:9px}
+  .hm-progrow .crown2{color:#d4a017;font-size:16px}
+  .hm-bar{flex:1;height:11px;border-radius:99px;background:#eee7d9;overflow:hidden;min-width:0}
+  .hm-bar i{display:block;height:100%;background:linear-gradient(90deg,#e2b93b,#c99a2e)}
+  .hm-left{font-size:12px;color:#4a4033;white-space:nowrap}
+  .hm-left b{color:var(--accent);font-size:17px}
+  .hm-progsub{display:flex;justify-content:space-between;gap:8px;font-size:11px;color:var(--ink3);margin-top:7px}
+  /* ④ ポイント（タップで履歴へ）＋ ⑤ 有効期限 */
+  .hm-tap{display:block;width:100%;text-align:left;font:inherit;color:inherit;border:0;cursor:pointer}
+  .hm-tap:active{transform:scale(.995)}
+  .hm-ptrow{display:flex;align-items:center;gap:12px}
+  .hm-pico{width:40px;height:40px;border-radius:50%;background:#7b6cc4;color:#fff;font-weight:800;
+           display:flex;align-items:center;justify-content:center;font-size:18px;flex:0 0 40px}
+  .hm-ptmain{flex:1;text-align:center;min-width:0}
+  .hm-ptn{font-size:33px;font-weight:800;color:var(--ink);line-height:1.15}
+  .hm-ptn small{font-size:14px;font-weight:600;color:var(--ink2)}
+  .hm-chev{font-size:22px;color:var(--ink2)}
+  .hm-divider{border-top:1px dashed #ddd4c4;margin:11px 0 9px}
+  .hm-exp{font-size:12.5px;color:#4a4033;display:flex;align-items:center;gap:7px;flex-wrap:wrap}
+  .hm-exp .cal{color:#2a9d8f;font-size:15px}
+  .hm-tapnote{font-size:11px;color:#e0567c;margin-top:8px}
+  /* ⑥ 還元率 */
+  .hm-rate{font-size:19px;font-weight:800;color:var(--ink);margin-top:2px}
+  .hm-ratesub{font-size:11px;color:var(--ink3);margin-top:2px}
+  /* ⑦ クーポン */
+  .hm-couphead{display:flex;align-items:center;font-size:13px;font-weight:700;color:#4a4033;margin:2px 2px 8px}
+  .hm-couphead .n{margin-left:auto;font-size:12px;color:#4a4033;cursor:pointer;background:none;border:0;font-family:inherit}
+  .hm-couphead .n b{color:var(--accent);font-size:16px}
+  .hm-coupon{background:#fdf3e4;border:1.5px solid #f2d3a3;border-radius:14px;padding:12px 14px;
+             margin-bottom:12px;display:flex;align-items:center;gap:12px;width:100%;text-align:left;
+             font:inherit;color:inherit;cursor:pointer}
+  .hm-coupon .ic{font-size:26px;flex:0 0 auto}
+  /* ⚠ ボタンの中なので中身は span で組んでいる。span のままだと1行に流れてしまうので、
+     クーポン名／割引／有効期限が縦に3行で並ぶように block にしておく。 */
+  .hm-coupon .bd{display:block;min-width:0}
+  .hm-coupon .t{display:block;font-size:13px;font-weight:700;color:#4a4033}
+  .hm-coupon .v{display:block;font-size:19px;font-weight:800;color:var(--accent);line-height:1.3}
+  .hm-coupon .e{display:block;font-size:11px;color:var(--ink3)}
+  /* ⑧ 最終ご来院 */
+  .hm-lastrow{display:flex;align-items:center;gap:12px}
+  .hm-clock{color:#2a9d8f;font-size:19px}
+  .hm-lastd{font-size:21px;font-weight:800;color:var(--ink);line-height:1.3}
+  .hm-ago{margin-left:auto;font-size:13px;color:var(--accent);font-weight:700;white-space:nowrap}
+  .hm-ago b{font-size:19px}
+
+  /* ===== ほかの画面 ===== */
+  table{width:100%;border-collapse:collapse;font-size:13.5px}
+  td{padding:8px 0;border-bottom:1px solid var(--line);vertical-align:top}
+  td.n{text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums}
+  .plus{color:var(--brand);font-weight:700}
+  .minus{color:var(--danger);font-weight:700}
+  /* 2026-09-08: 必要来院回数を足したので、狭い画面でも折れないように2行組みにした */
+  .rank-item{padding:10px 0;border-bottom:1px solid var(--line)}
+  .rank-item.cur{background:#f0f6f2;border-radius:9px;padding:10px;border-bottom:0}
+  .rank-item .r1{display:flex;align-items:baseline;gap:8px}
+  .rank-item .nm{font-weight:700;font-size:15px;min-width:0}
+  .rank-item .curtag{margin-left:auto;font-size:11.5px;font-weight:700;color:var(--brand);white-space:nowrap}
+  .rank-item .r2{display:flex;justify-content:space-between;gap:10px;margin-top:3px;
+                 font-size:12.5px;color:var(--ink2)}
+  .rank-item .need{white-space:nowrap}
+  .rank-item .rt{white-space:nowrap}
+  .rank-item .rt b{color:var(--ink);font-size:14px}
+  .coupon{border:1px dashed var(--gold);border-radius:11px;padding:12px;margin-bottom:8px;background:#fffdf5}
+  .coupon .v{font-size:17px;font-weight:800;color:var(--accent)}
+  /* 登録フォーム */
+  label{display:block;font-size:13px;font-weight:700;margin:12px 0 4px}
+  .req{color:var(--danger);font-size:11px;margin-left:4px}
+  input,select{width:100%;font:inherit;font-size:16px;padding:10px 12px;border:1px solid #d8dee3;
+               border-radius:9px;background:#fff}
+  .two{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+  button.primary{width:100%;font:inherit;font-weight:700;font-size:15px;padding:14px;border:0;
+                 border-radius:11px;background:var(--brand);color:#fff;margin-top:16px}
+  button.primary[disabled]{background:#9fb3a8}
+  .hint{font-size:12px;color:var(--ink3);margin-top:4px}
+  .linkbtn{width:100%;font:inherit;font-size:13px;font-weight:700;color:var(--brand);
+           background:none;border:0;padding:8px 0 0;text-align:left}
+  /* 下のタブ */
+  nav{position:fixed;left:0;right:0;bottom:0;display:flex;background:#fff;border-top:1px solid var(--line);
+      padding-bottom:env(safe-area-inset-bottom);z-index:5}
+  nav button{flex:1;min-width:0;font:inherit;font-size:10.5px;padding:9px 2px 8px;border:0;background:none;
+             color:var(--ink3);line-height:1.4}
+  nav button[aria-current="true"]{color:var(--brand);font-weight:700}
+  nav button b{display:block;font-size:17px;font-weight:400}
+</style>
+</head>
+<body>
+
+<div class="wrap">
+  <div id="boot" class="card center muted">読み込み中…</div>
+  <div id="error" class="card err" style="display:none"></div>
+
+  <!-- ============ 会員証（ホーム） ============ -->
+  <section class="screen" id="s-card">
+
+    <!-- ① ロゴ・ランク・還元率 -->
+    <div class="hm-top">
+      <img id="shopLogo" class="hm-logo" alt="">
+      <div class="hm-rankchip">
+        <div class="crown">&#9819;</div>
+        <div class="rname" id="hmRankName"></div>
+        <div class="rrate">還元率 <b><span id="hmRankRate">0</span>%</b></div>
+      </div>
+    </div>
+
+    <!-- ② 会員名 -->
+    <div class="hm-name" id="memberName"></div>
+    <div class="hm-greet">いつもご利用ありがとうございます</div>
+
+    <!-- ③ ランクアップ進捗 -->
+    <div class="card" id="nextRankBox">
+      <div class="hm-cap">&#9873; ランクアップ進捗</div>
+      <div class="hm-progrow">
+        <span class="crown2">&#9819;</span>
+        <div class="hm-bar"><i id="hmBar" style="width:0%"></i></div>
+        <span class="hm-left">あと <b id="hmLeft">0</b> 回</span>
+      </div>
+      <div class="hm-progsub"><span id="hmCurRank"></span><span>次のランクまで</span></div>
+    </div>
+
+    <!-- ④ 保有ポイント（タップでポイント履歴へ）＋ ⑤ ポイント有効期限 -->
+    <button type="button" class="card hm-tap" id="ptTap">
+      <div class="hm-ptrow">
+        <span class="hm-pico">P</span>
+        <div class="hm-ptmain">
+          <div class="hm-cap2">現在のポイント</div>
+          <div class="hm-ptn"><span id="ptNow">0</span><small> pt</small></div>
+        </div>
+        <span class="hm-chev">&rsaquo;</span>
+      </div>
+      <div id="expBox">
+        <div class="hm-divider"></div>
+        <div class="hm-exp"><span class="cal">&#9638;</span><span>ポイント有効期限</span><b id="hmExpire"></b></div>
+      </div>
+      <div class="hm-tapnote">※ポイントをタップするとポイント履歴を確認できます</div>
+    </button>
+
+    <!-- ⑥ ポイント還元率 -->
+    <div class="card">
+      <div class="hm-cap2">現在のポイント還元率</div>
+      <div class="hm-rate" id="rateMain"></div>
+      <div class="hm-ratesub">お支払い金額に対して付与されます</div>
+    </div>
+
+    <!-- ⑦ 利用可能なクーポン -->
+    <div id="cardCouponBox" style="display:none">
+      <div class="hm-couphead">
+        <span>&#9703; 利用可能なクーポン</span>
+        <button type="button" class="n" id="toCoupon"><b id="hmCoupN">0</b>枚 &rsaquo;</button>
+      </div>
+      <div id="cardCouponList"></div>
+    </div>
+
+    <!-- ⑧ 最終ご来院 -->
+    <div class="card">
+      <div class="hm-lastrow">
+        <span class="hm-clock">&#9719;</span>
+        <div>
+          <div class="hm-cap2">最終ご来院</div>
+          <div class="hm-lastd" id="hmLastDate">—</div>
+        </div>
+        <span class="hm-ago" id="hmLastAgo"></span>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ ポイント履歴 ============ -->
+  <section class="screen" id="s-history">
+    <div class="card">
+      <h1>ポイント履歴</h1>
+      <table id="histTable"></table>
+      <div class="muted" id="histEmpty" style="display:none">まだ履歴がありません。</div>
+    </div>
+  </section>
+
+  <!-- ============ クーポン一覧 ============ -->
+  <section class="screen" id="s-coupon">
+    <div class="card">
+      <h1>クーポン</h1>
+      <div id="couponList"></div>
+      <div class="muted" id="couponEmpty" style="display:none">お使いいただけるクーポンは今ありません。</div>
+    </div>
+  </section>
+
+  <!-- ============ メニュー（ランクと特典） ============ -->
+  <section class="screen" id="s-rank">
+    <div class="card">
+      <h1>ランクと特典</h1>
+      <div id="rankList"></div>
+      <div class="muted" style="margin-top:10px" id="rankNote"></div>
+    </div>
+  </section>
+
+  <!-- ============ 初回登録 ============ -->
+  <section class="screen" id="s-register">
+    <div class="card">
+      <h1 id="regShop">会員証のご登録</h1>
+      <div class="muted">次回のご来院からポイントがたまります。</div>
+      <label>お名前<span class="req">必須</span></label>
+      <div class="two"><input id="f_sei" placeholder="姓" autocomplete="family-name"><input id="f_mei" placeholder="名" autocomplete="given-name"></div>
+      <label>お名前（かな）<span class="req">必須</span></label>
+      <div class="two"><input id="f_seik" placeholder="せい"><input id="f_meik" placeholder="めい"></div>
+      <label>電話番号<span class="req">必須</span></label>
+      <input id="f_tel" type="tel" inputmode="numeric" placeholder="09012345678" autocomplete="tel">
+      <div class="hint">ハイフン（-）なしでご入力ください。ハイフンを入れても自動で外します。</div>
+      <div class="hint">院の記録と照らし合わせるために使います。</div>
+      <label>郵便番号<span class="hint" style="display:inline;margin-left:6px">任意</span></label>
+      <input id="f_zip" type="text" inputmode="numeric" placeholder="1234567" autocomplete="postal-code" maxlength="8">
+      <div class="hint">空欄のままでもご登録いただけます。</div>
+      <label>お誕生日<span class="hint" style="display:inline;margin-left:6px">任意</span></label>
+      <div class="two"><select id="f_bd_m"></select><select id="f_bd_d"></select></div>
+      <div class="hint">お誕生月のご案内にのみ使用します。空欄のままでもご登録いただけます。</div>
+      <label>当院のご利用について</label>
+      <select id="f_exist">
+        <option value="">初めて</option>
+        <option value="1">以前から利用している</option>
+      </select>
+      <div class="hint">「以前から利用している」を選ぶと、院の記録と照合してこれまでのご来院回数を引き継ぎます。</div>
+      <button class="primary" id="btnRegister">この内容で登録する</button>
+      <div class="hint center" style="margin-top:10px">
+        「登録する」を押すと、<a id="ppLink" href="#" target="_blank" rel="noopener">プライバシーポリシー</a>に同意したものとみなされます。
+      </div>
+    </div>
+  </section>
+</div>
+
+<nav id="nav" style="display:none">
+  <button data-s="s-card"    aria-current="true"><b>&#9635;</b>会員証</button>
+  <button data-s="s-history"><b>&#9719;</b>ポイント履歴</button>
+  <button data-s="s-coupon"><b>&#9703;</b>クーポン一覧</button>
+  <button data-s="s-rank"><b>&#9776;</b>メニュー</button>
+</nav>
+
+<script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
+<script>
+(function () {
+  'use strict';
+
+  /* ============ ここだけ環境ごとに書き換える ============ */
+  var CONFIG = {
+    liffId: '2011782644-jd8Um3cl',                 // 例: 1234567890-abcdefgh
+    apiUrl: 'https://script.google.com/macros/s/AKfycbxbed2jYNMcP0tQtxx6AQc9H5H85sL9G_dl1FfavxZ91WI2lU29wbLDqplJb_lKbtahyQ/exec',     // 例: https://script.google.com/macros/s/xxxx/exec
+    privacyPolicyUrl: 'https://setlog-app.github.io/sherpa-seitai/privacy.html',
+    // ロゴ画像。2026-08-23 にいただいた「logoのみ.png」をそのまま assets/logo.png として同梱している。
+    // ⚠ index.html と assets フォルダは必ずセットで配置する（assets を置き忘れるとロゴだけ出ない）。
+    // 別の画像に差し替えるときは、この1行のパスを変えるだけでよい。空にするとロゴの枠ごと非表示になる。
+    logoUrl: '../assets/logo.png'
+  };
+  /* ==================================================== */
+
+  var idToken = null;
+  var state = { member: null, coupons: [], ranks: [], settings: {} };
+
+  function $(id) { return document.getElementById(id); }
+  function show(id) {
+    Array.prototype.forEach.call(document.querySelectorAll('.screen'), function (s) { s.classList.toggle('on', s.id === id); });
+    Array.prototype.forEach.call(document.querySelectorAll('#nav button'), function (b) { b.setAttribute('aria-current', b.dataset.s === id ? 'true' : 'false'); });
+    window.scrollTo(0, 0);
+  }
+  function fail(msg) {
+    $('boot').style.display = 'none';
+    $('error').style.display = '';
+    $('error').textContent = msg;
+  }
+  function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
+  function num(n) { return Number(n || 0).toLocaleString('ja-JP'); }
+  /** '2026-08-10' を '2026/8/10' の見た目にする */
+  function jpDate(s) {
+    var m = String(s || '').match(/^(\d{4})-(\d{2})-(\d{2})/);
+    return m ? (m[1] + '/' + Number(m[2]) + '/' + Number(m[3])) : String(s || '');
+  }
+
+  /** GASウェブアプリ呼び出し。text/plain でプリフライトを避ける。 */
+  function api(action, params) {
+    var body = Object.assign({ action: action, idToken: idToken }, params || {});
+    return fetch(CONFIG.apiUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify(body)
+    }).then(function (r) { return r.json(); })
+      .then(function (j) { if (!j.ok) throw new Error(j.error || '通信に失敗しました'); return j.data; });
+  }
+
+  /* ---------------- 描画 ---------------- */
+
+  /** 店舗名など、未登録の方にも出す表示。会員データがなくても呼べる。 */
+  function renderShop() {
+    var s = state.settings;
+    $('regShop').textContent = (s.shop ? s.shop + ' ' : '') + '会員証のご登録';
+    var logo = CONFIG.logoUrl;
+    var ok = logo && logo.indexOf('__') !== 0;
+    $('shopLogo').style.display = ok ? '' : 'none';
+    if (ok) { $('shopLogo').src = logo; $('shopLogo').alt = s.shop || ''; }
+  }
+
+  /** 「ゴールドランク 8％」の書き方。ランク名が「ランク」で終わるときは重ねない。 */
+  function rankRateLabel(rankName, rate) {
+    var n = String(rankName || '');
+    return (/ランク$/.test(n) ? n : n + 'ランク') + ' ' + rate + '％';
+  }
+  function rankLabel(rankName) {
+    var n = String(rankName || '');
+    return /ランク$/.test(n) ? n : n + 'ランク';
+  }
+
+  /**
+   * 会員証（ホーム）。
+   * 並びは 9/1 にいただいた画像のとおり:
+   *   ロゴ＋ランク＋還元率 → 会員名 → 進捗 → ポイント → 有効期限 → 還元率 → クーポン → 最終ご来院
+   */
+  function renderCard() {
+    var m = state.member;
+    renderShop();
+
+    /* ① ロゴ・ランク・還元率 */
+    $('hmRankName').textContent = rankLabel(m.rank);
+    $('hmRankRate').textContent = m.rate;
+
+    /* ② 会員名 */
+    $('memberName').innerHTML = esc(m.name) + '<span>様</span>';
+
+    /* ③ ランクアップ進捗 */
+    if (m.nextRank) {
+      var from = Number(m.curRankVisits || 0), to = Number(m.nextRankVisits || m.visits);
+      var pct = to > from ? Math.min(100, Math.round((m.visits - from) / (to - from) * 100)) : 100;
+      $('hmBar').style.width = pct + '%';
+      $('hmLeft').textContent = m.nextRankRemain;
+      // 2026-09-08 ご要望: 左は「現在：62回」だけにする（ランク名は上のチップに出ている）
+      $('hmCurRank').textContent = '現在：' + m.visits + '回';
+      $('nextRankBox').style.display = '';
+    } else {
+      // 2026-09-08: 最上位ランク（VIP）の方は次が無いので「次のランクまで」の枠ごと出さない
+      $('nextRankBox').style.display = 'none';
+    }
+
+    /* ④ 保有ポイント ＋ ⑤ 有効期限 */
+    $('ptNow').textContent = num(m.points);
+    if (m.expire && m.expire.date) {
+      $('expBox').style.display = '';
+      $('hmExpire').textContent = jpDate(m.expire.date) + 'まで（うち' + num(m.expire.pt) + 'pt）';
+    } else {
+      $('expBox').style.display = 'none';
+    }
+
+    /* ⑥ 還元率 */
+    $('rateMain').textContent = rankRateLabel(m.rank, m.rate);
+
+    /* ⑧ 最終ご来院（日付と経過日数の両方） */
+    if (m.lastVisit) {
+      $('hmLastDate').textContent = jpDate(m.lastVisit);
+      $('hmLastAgo').innerHTML = (m.lastVisitAgo === null || m.lastVisitAgo === undefined)
+        ? '' : ('<b>' + m.lastVisitAgo + '</b>日前');
+    } else {
+      $('hmLastDate').textContent = 'ご来院の記録はまだありません';
+      $('hmLastAgo').textContent = '';
+    }
+  }
+
+  /**
+   * ランクと特典（下のタブの「メニュー」）。
+   * 2026-08-22 のご要望により、この画面は各ランクの還元率だけを出す。
+   * （「○日以内のご来院で＋○pt」の行はここには出さない）
+   */
+  function renderRanks() {
+    $('rankList').innerHTML = state.ranks.map(function (r) {
+      var cur = state.member && r.name === state.member.rank;
+      // 2026-09-08 ご要望: 必要な来院回数も出す。
+      //   数字は管理画面「ランク設定」の必要来院回数をそのまま読んでいるので、設定を変えるとここも変わる。
+      var need = Number(r.visits || 0);
+      return '<div class="rank-item' + (cur ? ' cur' : '') + '">'
+        + '<div class="r1"><span class="nm" style="color:' + esc(r.color) + '">' + esc(r.name) + '</span>'
+        + (cur ? '<span class="curtag">現在のランク</span>' : '') + '</div>'
+        + '<div class="r2">'
+        + '<span class="need">' + (need > 0 ? 'ご来院 ' + num(need) + '回以上' : 'ご登録から') + '</span>'
+        + '<span class="rt">還元率 <b>' + r.rate + '％</b></span>'
+        + '</div></div>';
+    }).join('');
+    var s = state.settings;
+    $('rankNote').textContent = s.canUsePoints
+      ? ('たまったポイントは ' + num(s.minUse) + 'pt から、1pt = ' + s.ptYen + '円 としてお会計にお使いいただけます。有効期限は付与から ' + s.expireDays + ' 日です。')
+      : ('ポイントの有効期限は付与から ' + s.expireDays + ' 日です。');
+  }
+
+  function renderHistory(list) {
+    if (!list.length) { $('histEmpty').style.display = ''; $('histTable').innerHTML = ''; return; }
+    $('histEmpty').style.display = 'none';
+    $('histTable').innerHTML = list.map(function (h) {
+      var cls = h.pt >= 0 ? 'plus' : 'minus';
+      return '<tr><td>' + esc(h.date) + '<br><span class="muted">' + esc(h.reason || h.kind) + '</span></td>'
+        + '<td class="n ' + cls + '">' + (h.pt >= 0 ? '+' : '') + num(h.pt) + ' pt<br>'
+        + '<span class="muted" style="font-weight:400">残 ' + num(h.balance) + '</span></td></tr>';
+    }).join('');
+  }
+
+  /** ホームに出すクーポン1枚 */
+  function homeCouponHtml(c) {
+    var icon = /誕生/.test(c.name) ? '&#127874;' : '&#9819;';
+    return '<button type="button" class="hm-coupon" data-coupon="1">'
+      + '<span class="ic">' + icon + '</span>'
+      + '<span class="bd">'
+      + '<span class="t">' + esc(c.name) + '</span>'
+      + '<span class="v">' + esc(c.discount || c.body) + '</span>'
+      + (c.expire ? '<span class="e">有効期限：' + esc(jpDate(c.expire)) + '</span>' : '')
+      + '</span></button>';
+  }
+  /** クーポン一覧のタブに出す1枚 */
+  function couponHtml(c) {
+    return '<div class="coupon"><b>' + esc(c.name) + '</b>'
+      + '<div class="v">' + esc(c.discount || c.body) + '</div>'
+      + (c.body && c.body !== c.discount ? '<div class="muted">' + esc(c.body) + '</div>' : '')
+      + (c.expire ? '<div class="muted">' + esc(jpDate(c.expire)) + ' まで</div>' : '')
+      + (c.withPoint ? '' : '<div class="muted">※ポイントとの併用はできません</div>')
+      + (c.withCoupon ? '' : '<div class="muted">※ほかのクーポンとの併用はできません</div>')
+      + '</div>';
+  }
+
+  function renderCoupons() {
+    /* クーポン一覧のタブ */
+    if (!state.coupons.length) { $('couponEmpty').style.display = ''; $('couponList').innerHTML = ''; }
+    else { $('couponEmpty').style.display = 'none'; $('couponList').innerHTML = state.coupons.map(couponHtml).join(''); }
+
+    /* 会員証（ホーム）にも出す。0枚のときは枠ごと消す。 */
+    if (!state.coupons.length) { $('cardCouponBox').style.display = 'none'; $('cardCouponList').innerHTML = ''; return; }
+    $('cardCouponBox').style.display = '';
+    $('hmCoupN').textContent = state.coupons.length;
+    $('cardCouponList').innerHTML = state.coupons.slice(0, 3).map(homeCouponHtml).join('');
+  }
+
+  /* ---------------- 起動 ---------------- */
+
+  function openHistory() {
+    show('s-history');
+    return api('pointHistory').then(function (d) { renderHistory(d.history); }).catch(function (err) { fail(err.message); });
+  }
+
+  $('ptTap').addEventListener('click', openHistory);
+  $('toCoupon').addEventListener('click', function () { show('s-coupon'); });
+  $('cardCouponList').addEventListener('click', function (e) {
+    if (e.target.closest('[data-coupon]')) show('s-coupon');
+  });
+
+  document.getElementById('nav').addEventListener('click', function (e) {
+    var b = e.target.closest('button[data-s]');
+    if (!b) return;
+    show(b.dataset.s);
+    if (b.dataset.s === 's-history') api('pointHistory').then(function (d) { renderHistory(d.history); }).catch(function (err) { fail(err.message); });
+  });
+
+  /**
+   * 2026-09-08: 電話番号はハイフン・空白・全角を自動で外して送る。
+   *   入力欄から離れた時点で見た目も整えるので、直ったことがその場で分かる。
+   */
+  function normTel(v) {
+    return String(v == null ? '' : v)
+      .replace(/[０-９]/g, function (c) { return String.fromCharCode(c.charCodeAt(0) - 0xFEE0); })
+      .replace(/[^0-9]/g, '');
+  }
+  $('f_tel').addEventListener('blur', function () { this.value = normTel(this.value); });
+
+  /**
+   * 2026-09-08: お誕生日は月と日だけ（任意）。
+   *   両方選ばれたときだけ '--MM-DD' の形で送る。年は聞かない。
+   */
+  function birthdayValue() {
+    var mo = $('f_bd_m').value, d = $('f_bd_d').value;
+    if (!mo || !d) return '';
+    return '--' + ('0' + mo).slice(-2) + '-' + ('0' + d).slice(-2);
+  }
+  function fillBirthdayOptions() {
+    var mo = ['<option value="">月</option>'], dd = ['<option value="">日</option>'];
+    for (var i = 1; i <= 12; i++) mo.push('<option value="' + i + '">' + i + '月</option>');
+    for (var j = 1; j <= 31; j++) dd.push('<option value="' + j + '">' + j + '日</option>');
+    $('f_bd_m').innerHTML = mo.join('');
+    $('f_bd_d').innerHTML = dd.join('');
+  }
+
+  $('btnRegister').addEventListener('click', function () {
+    var p = {
+      sei: $('f_sei').value.trim(), mei: $('f_mei').value.trim(),
+      seiKana: $('f_seik').value.trim(), meiKana: $('f_meik').value.trim(),
+      tel: normTel($('f_tel').value), birthday: birthdayValue(),
+      zip: $('f_zip').value.trim(),          // 任意項目
+      existing: $('f_exist').value === '1'
+    };
+    // 2026-09-08: お誕生日（birthday）と郵便番号（zip）は任意。未入力でも登録できる。
+    var miss = ['sei', 'mei', 'seiKana', 'meiKana', 'tel'].filter(function (k) { return !p[k]; });
+    if (miss.length) { alert('未入力の項目があります。'); return; }
+    $('btnRegister').disabled = true;
+    api('register', p).then(function () { return api('me'); }).then(function (d) {
+      state.member = d.member; state.coupons = d.coupons || [];
+      renderCard(); renderRanks(); renderCoupons();
+      $('nav').style.display = ''; show('s-card');
+    }).catch(function (err) { $('btnRegister').disabled = false; alert(err.message); });
+  });
+
+  function start() {
+    $('ppLink').href = CONFIG.privacyPolicyUrl;
+    fillBirthdayOptions();
+    liff.init({ liffId: CONFIG.liffId })
+      .then(function () {
+        if (!liff.isLoggedIn()) { liff.login(); return null; }
+        idToken = liff.getIDToken();
+        if (!idToken) throw new Error('LINEの認証情報を取得できませんでした。一度アプリを閉じて開き直してください。');
+        return Promise.all([api('me'), api('ranks')]);
+      })
+      .then(function (res) {
+        if (!res) return;
+        var me = res[0], meta = res[1];
+        state.ranks = meta.ranks; state.settings = meta.settings;
+        $('boot').style.display = 'none';
+        renderShop();
+        if (!me.registered) { show('s-register'); return; }
+        state.member = me.member; state.coupons = me.coupons || [];
+        renderCard(); renderRanks(); renderCoupons();
+        $('nav').style.display = ''; show('s-card');
+      })
+      .catch(function (err) { fail(err && err.message ? err.message : String(err)); });
+  }
+
+  if (window.liff) start();
+  else window.addEventListener('load', function () { window.liff ? start() : fail('LINEの読み込みに失敗しました。通信環境をご確認ください。'); });
+})();
+</script>
+</body>
+</html>
