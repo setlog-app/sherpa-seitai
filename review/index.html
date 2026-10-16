@@ -195,6 +195,17 @@
       <div class="hm-progsub"><span id="hmCurRank"></span><span>次のランクまで</span></div>
     </div>
 
+    <!-- 🔴 2026-10-16: ランクダウン中の方に「元のランクに戻るまであと○回」 -->
+    <div class="card" id="restoreBox" style="display:none">
+      <div class="hm-cap">&#9873; ランクの復帰</div>
+      <div class="hm-progrow">
+        <span class="crown2">&#9819;</span>
+        <div class="hm-bar"><i id="hmRestoreBar" style="width:0%"></i></div>
+        <span class="hm-left">あと <b id="hmRestoreLeft">0</b> 回</span>
+      </div>
+      <div class="hm-progsub"><span id="hmRestoreCur"></span><span id="hmRestoreTo"></span></div>
+    </div>
+
     <!-- ④ 保有ポイント（タップでポイント履歴へ）＋ ⑤ ポイント有効期限 -->
     <button type="button" class="card hm-tap" id="ptTap">
       <div class="hm-ptrow">
@@ -494,6 +505,18 @@
 
     /* ② 会員名 */
     $('memberName').innerHTML = esc(m.name) + '<span>様</span>';
+
+    /* ③-2 🔴 2026-10-16: ランクダウン中の方は「○○に戻るまであと○回」を出す */
+    if (m.restore && m.restore.left > 0) {
+      var rn = Number(m.restore.need || 0), rd = Number(m.restore.done || 0);
+      $('hmRestoreBar').style.width = (rn > 0 ? Math.min(100, Math.round(rd / rn * 100)) : 0) + '%';
+      $('hmRestoreLeft').textContent = m.restore.left;
+      $('hmRestoreCur').textContent = 'ご来院 ' + rd + ' / ' + rn + ' 回';
+      $('hmRestoreTo').textContent = rankLabel(m.restore.toRank) + ' に戻るまで';
+      $('restoreBox').style.display = '';
+    } else {
+      $('restoreBox').style.display = 'none';
+    }
 
     /* ③ ランクアップ進捗 */
     if (m.nextRank) {
