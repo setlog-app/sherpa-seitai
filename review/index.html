@@ -536,7 +536,8 @@
     $('ptNow').textContent = num(m.points);
     if (m.expire && m.expire.date) {
       $('expBox').style.display = '';
-      $('hmExpire').textContent = jpDate(m.expire.date) + 'まで（うち' + num(m.expire.pt) + 'pt）';
+      // 🔴 2026-10-19: 有効期限は最後にポイントが付いた日から数えて全体で1つになったので、保有全体がその日に切れるときは「（うち○pt）」を出さない
+      $('hmExpire').textContent = jpDate(m.expire.date) + 'まで' + (Number(m.expire.pt) < Number(m.points) ? '（うち' + num(m.expire.pt) + 'pt）' : '');
     } else {
       $('expBox').style.display = 'none';
     }
@@ -574,10 +575,17 @@
         + '<span class="rt">還元率 <b>' + r.rate + '％</b></span>'
         + '</div></div>';
     }).join('');
+    // 🔴 2026-10-19 さの様ご要望: 注意書きを4点に。数字（○ptから・○pt単位・1pt＝○円）はポイント設定の値をそのまま読む
     var s = state.settings;
-    $('rankNote').textContent = s.canUsePoints
-      ? ('たまったポイントは ' + num(s.minUse) + 'pt から、' + num(s.minUse) + 'pt 単位（1pt = ' + s.ptYen + '円）でお会計にお使いいただけます。有効期限は付与から ' + s.expireDays + ' 日です。')
-      : ('ポイントの有効期限は付与から ' + s.expireDays + ' 日です。');
+    var notes = [
+      (s.canUsePoints
+        ? 'ポイントは' + num(s.minUse) + 'ptから、' + num(s.minUse) + 'pt単位で1pt＝' + s.ptYen + '円として通常メニューのお会計にご利用いただけます。回数券のご購入にはご利用いただけません。なお、ポイントには有効期限がございます。'
+        : 'ポイントには有効期限がございます。'),
+      '回数券をご利用の場合、通常メニューとはポイントの付与方法が異なり、所定の来院ポイントが付与されます。',
+      '一定期間ご来院がない場合、ランクが変更になることがあります。',
+      'ランク条件・ポイント還元率・特典内容等は、予告なく変更となる場合があります。'
+    ];
+    $('rankNote').innerHTML = '<ul style="margin:0;padding-left:1.2em">' + notes.map(function (t) { return '<li style="margin:4px 0">' + esc(t) + '</li>'; }).join('') + '</ul>';
   }
 
   function renderHistory(list) {
